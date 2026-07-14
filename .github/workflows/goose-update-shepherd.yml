@@ -100,6 +100,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
+      TARGET_SHA: ${{ inputs.target_sha }}
       GOOSE_PROVIDER: google
       GOOSE_MODEL: ${{ vars.GOOSE_MODEL }}
       GEMINI3_THINKING_LEVEL: low
@@ -245,7 +246,10 @@ jobs:
             exit 1
           fi
 
-          changed="$(git diff --name-only HEAD)"
+          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
+          test "$(git rev-parse HEAD)" = "$normalized_target"
+
+          changed="$(git diff --name-only "$TARGET_SHA")"
           if [ "$changed" != "test/handlers.ts" ]; then
             echo "::error::Tracked repair diff must contain exactly test/handlers.ts"
             printf '%s\n' "$changed"
@@ -260,7 +264,7 @@ jobs:
           fi
 
           npm run check 2>&1 | tee artifacts/final-check.log
-          git diff --binary HEAD -- test/handlers.ts > artifacts/goose-fix.patch
+          git diff --binary "$TARGET_SHA" -- test/handlers.ts > artifacts/goose-fix.patch
           test -s artifacts/goose-fix.patch
           test -s artifacts/goose-summary.md
 

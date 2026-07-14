@@ -37,7 +37,7 @@ retry:
     - type: shell
       command: "npm run check"
     - type: shell
-      command: "test \"$(git diff --name-only HEAD)\" = \"test/handlers.ts\""
+      command: 'test "$(git diff --name-only "$TARGET_SHA")" = "test/handlers.ts"'
     - type: shell
       command: "test -z \"$(git ls-files --others --exclude-standard)\""
     - type: shell

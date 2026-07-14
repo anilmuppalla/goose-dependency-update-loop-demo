@@ -6,7 +6,7 @@
 - Type-check: `npm run typecheck`
 - Test: `npm test`
 - Run every project check: `npm run check`
-- Inspect tracked changes: `git diff --name-only HEAD`
+- Inspect tracked changes: `git diff --name-only "$TARGET_SHA"`
 - Inspect unexpected untracked files:
   `git ls-files --others --exclude-standard`
 
@@ -45,9 +45,9 @@ If a correct repair requires any tracked file outside `test/handlers.ts`, write
 
 ## Completion contract
 
-Run `npm run check`. Confirm that `git diff --name-only HEAD` prints exactly
-`test/handlers.ts` and that `git ls-files --others --exclude-standard` prints
-nothing.
+Run `npm run check`. Confirm that `git diff --name-only "$TARGET_SHA"` prints
+exactly `test/handlers.ts` and that
+`git ls-files --others --exclude-standard` prints nothing.
 
 Write `artifacts/goose-summary.md` with:
 
