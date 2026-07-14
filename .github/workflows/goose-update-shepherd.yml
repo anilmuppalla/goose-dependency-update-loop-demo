@@ -1,0 +1,285 @@
+name: Goose dependency update shepherd
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Exact trusted upgrade commit SHA to repair"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goose-update-shepherd-${{ inputs.target_sha }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate immutable inputs
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::target_sha must be exactly 40 hexadecimal characters"
+            exit 1
+          fi
+          if [[ ! "$BASELINE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::BASELINE_SHA must be exactly 40 hexadecimal characters"
+            exit 1
+          fi
+
+      - name: Check out exact target SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Verify immutable dependency-only upgrade
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+        run: |
+          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
+          test "$(git rev-parse HEAD)" = "$normalized_target"
+          expected="$(printf '%s\n' package-lock.json package.json)"
+          actual="$(git diff --name-only "$BASELINE_SHA...$TARGET_SHA" | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::The baseline-to-target diff must contain only package.json and package-lock.json"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+
+          git show "$BASELINE_SHA:package.json" > "$RUNNER_TEMP/base-package.json"
+          node scripts/validate-upgrade.mjs "$RUNNER_TEMP/base-package.json" package.json
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Prove the expected baseline failure
+        run: |
+          mkdir -p artifacts
+          set +e
+          npm run typecheck > artifacts/baseline.log 2>&1
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            echo "::error::The dependency-only target must fail type-checking before repair"
+            exit 1
+          fi
+
+          grep -Fqx "test/handlers.ts(1,10): error TS2305: Module '\"msw\"' has no exported member 'rest'." artifacts/baseline.log
+
+      - name: Upload preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: goose-preflight-${{ inputs.target_sha }}
+          path: artifacts/baseline.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  repair:
+    needs: preflight
+    environment: goose-repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOOSE_PROVIDER: google
+      GOOSE_MODEL: ${{ vars.GOOSE_MODEL }}
+      GEMINI3_THINKING_LEVEL: low
+      GOOSE_MODE: auto
+      GOOSE_MAX_TURNS: "20"
+      GOOSE_DISABLE_SESSION_NAMING: "true"
+      GOOSE_DISABLE_TOOL_CALL_SUMMARY: "true"
+      GOOSE_DISABLE_KEYRING: "1"
+      GOOSE_RANDOM_THINKING_MESSAGES: "false"
+      GOOSE_TELEMETRY_ENABLED: "false"
+
+    steps:
+      - name: Validate immutable inputs again
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::target_sha must be exactly 40 hexadecimal characters"
+            exit 1
+          fi
+          if [[ ! "$BASELINE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::BASELINE_SHA must be exactly 40 hexadecimal characters"
+            exit 1
+          fi
+
+      - name: Check out exact target SHA again
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Repeat immutable and semantic checks
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+        run: |
+          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
+          test "$(git rev-parse HEAD)" = "$normalized_target"
+          expected="$(printf '%s\n' package-lock.json package.json)"
+          actual="$(git diff --name-only "$BASELINE_SHA...$TARGET_SHA" | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::The baseline-to-target diff must contain only package.json and package-lock.json"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+
+          git show "$BASELINE_SHA:package.json" > "$RUNNER_TEMP/base-package.json"
+          node scripts/validate-upgrade.mjs "$RUNNER_TEMP/base-package.json" package.json
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Reproduce the expected baseline failure
+        run: |
+          mkdir -p artifacts
+          set +e
+          npm run typecheck > artifacts/baseline.log 2>&1
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            echo "::error::The dependency-only target must fail type-checking before repair"
+            exit 1
+          fi
+
+          grep -Fqx "test/handlers.ts(1,10): error TS2305: Module '\"msw\"' has no exported member 'rest'." artifacts/baseline.log
+
+      - name: Install pinned Goose 1.36.0
+        run: |
+          archive="$RUNNER_TEMP/goose-x86_64-unknown-linux-gnu.tar.bz2"
+          install_dir="$RUNNER_TEMP/goose-bin"
+          url="https://github.com/aaif-goose/goose/releases/download/v1.36.0/goose-x86_64-unknown-linux-gnu.tar.bz2"
+          expected_sha256="e679afee737d28fa0f66bfde821522dc898e3c52cafd534909652e73ad8df267"
+
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "$url" --output "$archive"
+          printf '%s  %s\n' "$expected_sha256" "$archive" | sha256sum --check -
+
+          mkdir -p "$install_dir"
+          tar -xjf "$archive" -C "$install_dir"
+          test "$("$install_dir/goose" --version | tr -d '[:space:]')" = "1.36.0"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Validate bounded recipe before model access
+        run: |
+          test -n "$GOOSE_MODEL"
+          goose recipe validate .goose/dependency-update.yaml
+
+      - name: Run bounded Goose recipe
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          if [ -z "$GOOGLE_API_KEY" ]; then
+            echo "GOOSE_EXIT=1" >> "$GITHUB_ENV"
+            echo "::error::GOOGLE_API_KEY is not configured"
+            exit 1
+          fi
+
+          mkdir -p artifacts
+          raw_log="$RUNNER_TEMP/goose-run.log"
+
+          set +e
+          goose run --no-session --no-profile --recipe .goose/dependency-update.yaml > "$raw_log" 2>&1
+          goose_exit=$?
+          set -e
+          printf 'GOOSE_EXIT=%s\n' "$goose_exit" >> "$GITHUB_ENV"
+
+          if grep -Fq -- "$GOOGLE_API_KEY" "$raw_log" ||
+            grep -R -Fq -- "$GOOGLE_API_KEY" artifacts; then
+            rm -f "$raw_log"
+            rm -rf artifacts
+            mkdir -p artifacts
+            printf '%s\n' "Credential-like content detected. Evidence withheld for security review." > artifacts/SECURITY_HOLD.txt
+            echo "::error::Potential credential exposure detected; evidence withheld"
+            exit 1
+          fi
+
+          cp "$raw_log" artifacts/goose-run.log
+          rm -f "$raw_log"
+
+      - name: Verify repair scope and final result
+        if: always()
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+        run: |
+          if [ -f artifacts/SECURITY_HOLD.txt ]; then
+            echo "::error::Security hold is active; no other evidence will be produced"
+            exit 1
+          fi
+
+          if [ -z "${GOOSE_EXIT:-}" ] || [ "$GOOSE_EXIT" -ne 0 ]; then
+            echo "::error::Goose did not exit successfully"
+            exit 1
+          fi
+
+          changed="$(git diff --name-only HEAD)"
+          if [ "$changed" != "test/handlers.ts" ]; then
+            echo "::error::Tracked repair diff must contain exactly test/handlers.ts"
+            printf '%s\n' "$changed"
+            exit 1
+          fi
+
+          untracked="$(git ls-files --others --exclude-standard)"
+          if [ -n "$untracked" ]; then
+            echo "::error::Unexpected nonignored untracked files"
+            printf '%s\n' "$untracked"
+            exit 1
+          fi
+
+          npm run check 2>&1 | tee artifacts/final-check.log
+          git diff --binary HEAD -- test/handlers.ts > artifacts/goose-fix.patch
+          test -s artifacts/goose-fix.patch
+          test -s artifacts/goose-summary.md
+
+          goose_version="$(goose --version | tr -d '[:space:]')"
+          {
+            printf 'target_sha=%s\n' "$TARGET_SHA"
+            printf 'baseline_sha=%s\n' "$BASELINE_SHA"
+            printf 'goose_version=%s\n' "$goose_version"
+            printf 'provider=%s\n' "$GOOSE_PROVIDER"
+            printf 'model=%s\n' "$GOOSE_MODEL"
+            printf 'runner_label=%s\n' "ubuntu-24.04"
+            printf 'runner_image=%s\n' "${ImageOS:-unknown}"
+            printf 'runner_image_version=%s\n' "${ImageVersion:-unknown}"
+            printf 'run_url=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > artifacts/run-metadata.txt
+
+      - name: Upload repair evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: goose-repair-${{ inputs.target_sha }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30

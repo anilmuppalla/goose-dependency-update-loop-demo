@@ -1,4 +1,5 @@
 node_modules/
 artifacts/
-.goose/
+.goose/*
+!.goose/dependency-update.yaml
 .goosehints
