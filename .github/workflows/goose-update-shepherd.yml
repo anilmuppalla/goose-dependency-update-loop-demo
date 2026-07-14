@@ -55,8 +55,9 @@ jobs:
         run: |
           normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
           test "$(git rev-parse HEAD)" = "$normalized_target"
+          git merge-base --is-ancestor "$BASELINE_SHA" "$TARGET_SHA"
           expected="$(printf '%s\n' package-lock.json package.json)"
-          actual="$(git diff --name-only "$BASELINE_SHA...$TARGET_SHA" | LC_ALL=C sort)"
+          actual="$(git diff --name-only "$BASELINE_SHA" "$TARGET_SHA" | LC_ALL=C sort)"
           if [ "$actual" != "$expected" ]; then
             echo "::error::The baseline-to-target diff must contain only package.json and package-lock.json"
             printf '%s\n' "$actual"
@@ -145,8 +146,9 @@ jobs:
         run: |
           normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
           test "$(git rev-parse HEAD)" = "$normalized_target"
+          git merge-base --is-ancestor "$BASELINE_SHA" "$TARGET_SHA"
           expected="$(printf '%s\n' package-lock.json package.json)"
-          actual="$(git diff --name-only "$BASELINE_SHA...$TARGET_SHA" | LC_ALL=C sort)"
+          actual="$(git diff --name-only "$BASELINE_SHA" "$TARGET_SHA" | LC_ALL=C sort)"
           if [ "$actual" != "$expected" ]; then
             echo "::error::The baseline-to-target diff must contain only package.json and package-lock.json"
             printf '%s\n' "$actual"
