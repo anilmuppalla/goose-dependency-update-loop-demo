@@ -14,6 +14,7 @@ const agentInstructions = readFileSync(
   new URL("../AGENTS.md", import.meta.url),
   "utf8",
 );
+const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
 const repairJobStart = workflow.indexOf("\n  repair:");
 const repairStepsStart = workflow.indexOf("\n    steps:", repairJobStart);
@@ -86,5 +87,22 @@ describe("Goose shepherd immutable upgrade contract", () => {
       expect(contract).not.toContain("git diff --name-only HEAD");
     }
     expect(workflow).not.toContain("git diff --binary HEAD");
+  });
+
+  test("documents the required human approval checks", () => {
+    const prose = readme.replace(/\s+/g, " ");
+
+    expect(prose).toContain(
+      "Before approving the `goose-repair` environment deployment, the required reviewer must:",
+    );
+    expect(prose).toContain(
+      "Verify the deployment request is for the exact submitted 40-character `target_sha`.",
+    );
+    expect(prose).toContain(
+      "Inspect `package-lock.json` from that exact target commit.",
+    );
+    expect(prose).toContain(
+      "Reject the approval if the lockfile has unexpected source URLs, integrity hashes, or packages, or if you have not reviewed that target commit.",
+    );
   });
 });

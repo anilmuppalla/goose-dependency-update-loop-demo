@@ -51,12 +51,24 @@ The repair uses Google Gemini through an API key created in
 
 Configure the repository before dispatching the manual workflow:
 
-1. Create the protected GitHub Actions environment `goose-repair`.
+1. Create the protected GitHub Actions environment `goose-repair` and
+   configure at least one required reviewer.
 2. Add `GOOGLE_API_KEY` as an environment secret in `goose-repair`.
 3. Add `GOOSE_MODEL` as an environment or repository variable containing the
    approved Gemini model name.
 4. Add `BASELINE_SHA` as a repository variable containing the 40-character
    green baseline commit SHA.
+
+Before approving the `goose-repair` environment deployment, the required
+reviewer must:
+
+1. Verify the deployment request is for the exact submitted 40-character
+   `target_sha`. Open the linked workflow run and compare the full value; reject
+   an abbreviated or mismatched SHA.
+2. Inspect `package-lock.json` from that exact target commit. Use the commit's
+   file view or a trusted local checkout. Reject the approval if the lockfile
+   has unexpected source URLs, integrity hashes, or packages, or if you have
+   not reviewed that target commit.
 
 The workflow fixes `GOOSE_PROVIDER=google` and exposes `GOOGLE_API_KEY` only to
 the bounded Goose execution step. Repository permissions remain
