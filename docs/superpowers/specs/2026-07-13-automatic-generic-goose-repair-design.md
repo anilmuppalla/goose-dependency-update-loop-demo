@@ -65,18 +65,26 @@ It continues only when all of the following are true:
 - the event identifies exactly one open pull request;
 - the pull request targets `main`;
 - the head repository matches the current repository;
-- target and base SHAs are full 40-character commit IDs;
-- the target descends from the base;
-- the base-to-target change is a dependency-only update.
+- the failed workflow SHA still equals the pull request's current head SHA;
+- target, current `main`, and computed merge-base SHAs are full 40-character
+  commit IDs;
+- the GitHub pull-request file list exactly matches the merge-base-to-target Git
+  diff;
+- that verified pull-request change is a dependency-only update.
 
 For this npm demo, dependency-only means that the incoming PR changes exactly
 `package.json` and `package-lock.json`. A generic manifest validator permits
 changes only inside npm dependency maps and requires at least one dependency
 entry to change. All package metadata, scripts, and validation commands must
-match the base. `npm ci --ignore-scripts` must accept the lockfile.
+match the merge-base version. `npm ci --ignore-scripts` must accept the
+lockfile.
 
-The workflow derives target SHA, base SHA, and PR number from the event and
-GitHub API. It has no caller-supplied SHA and no fixed `BASELINE_SHA` variable.
+The workflow derives target SHA and PR number from the event and confirms them
+against the GitHub API. It fetches current `main`, computes the PR merge base,
+and cross-checks the API file list against the corresponding Git diff. This
+allows `main` to advance without forcing the demo branch to rebase while still
+preventing hidden target changes. The workflow has no caller-supplied SHA and no
+fixed `BASELINE_SHA` variable.
 
 ## Generic Goose context and action
 
@@ -164,8 +172,8 @@ Every eligible run preserves:
 - the final check log;
 - a binary patch containing every allowed repair file;
 - Goose's repair summary;
-- target SHA, base SHA, PR number, Goose version, provider, model, runner, and
-  run URL;
+- target SHA, current base SHA, merge-base SHA, PR number, Goose version,
+  provider, model, runner, and run URL;
 - a security hold marker instead of logs if credential-like content is found.
 
 The artifact and commit status link the candidate back to the exact failed PR
@@ -177,7 +185,9 @@ SHA. A human applies the patch to the PR branch only after reviewing the diff.
 - Push and scheduled CI runs do not start Goose.
 - Forked, missing, ambiguous, closed, or non-`main` pull requests are rejected.
 - A non-dependency-only PR is rejected before environment approval.
-- A target that moves or diverges from its base is rejected.
+- A failed workflow SHA that no longer matches the PR head is rejected.
+- A GitHub pull-request file list that differs from the merge-base Git diff is
+  rejected.
 - Missing model configuration fails before the model call.
 - A denied or unapproved environment never receives the secret.
 - A security scan match withholds normal evidence and fails the run.
@@ -194,7 +204,10 @@ Contract tests will assert that:
 
 - the workflow uses `workflow_run` for completed `CI` runs and no longer uses
   `workflow_dispatch`;
-- event-derived base, target, and PR identity are validated before checkout;
+- event-derived target and PR identity are validated before checkout and
+  confirmed against the GitHub API;
+- current `main`, merge-base, API file list, and Git diff agree before model
+  access;
 - the workflow rejects green, non-PR, forked, ambiguous, and non-dependency
   events;
 - the recipe, workflow, and repair instructions contain no MSW-specific error,
@@ -223,9 +236,8 @@ The trusted workflow must land on `main` before it can receive `workflow_run`
 events. Publish the implementation through a separately reviewed, green pull
 request, then remove the obsolete `BASELINE_SHA` repository variable.
 
-After publication, rebase the existing red dependency branch onto the new
-`main` so its event-derived base is an ancestor of its target. Force-push that
-demo branch with lease and let CI fail again. The resulting failed CI run should
-start Goose automatically and expose the `Goose repair candidate` status. The
-real model run remains blocked until `GOOGLE_API_KEY` is configured and the
-environment request is approved.
+After publication, rerun CI for the existing red dependency PR without changing
+or rebasing its branch. The resulting failed CI run should start Goose
+automatically and expose the `Goose repair candidate` status. The real model run
+remains blocked until `GOOGLE_API_KEY` is configured and the environment request
+is approved.
