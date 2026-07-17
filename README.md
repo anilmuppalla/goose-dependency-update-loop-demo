@@ -1,113 +1,76 @@
-# Bounded Dependency Update Repair with Goose
+# Dependency Repair Loop with Goose
 
-This repository is a small, auditable example of **loop engineering with
-Goose**. The point is not that an agent can edit a handler. The point is that a
-maintenance loop can constrain the trigger, context, action, evaluation,
-retry budget, evidence, and final decision.
+This repository demonstrates one idea:
 
-## The loop engineering framework
+```text
+CI fails -> Goose diagnoses and repairs -> Goose pushes -> CI runs again
+```
 
-1. **Trigger:** a maintainer manually dispatches a workflow for one immutable
-   40-character commit SHA.
-2. **Context:** Goose reads the repository rules, the captured TypeScript
-   failure, a frozen migration note, and the one repairable source file.
-3. **Goose action:** Goose may repair only `test/handlers.ts` using its built-in
-   developer extension.
-4. **Deterministic evaluator:** TypeScript, Vitest, tracked-diff, untracked-file,
-   and evidence checks decide whether an attempt passed.
-5. **Bounded retry:** the recipe allows two retries—at most three attempts in
-   total—with a five-minute timeout and a 20-turn cap.
-6. **Durable evidence:** the runner preserves the baseline failure,
-   secret-scanned Goose log, final check, binary patch, summary, and run
-   metadata.
-7. **Human decision:** the workflow uploads a patch. It never commits, pushes,
-   opens a pull request, merges, or deploys.
+Green CI stops the loop. Another failure starts another repair attempt.
 
-## Worked example: MSW 1.x to 2.x
+## The two workflows
 
-`main` pins Mock Service Worker (MSW) `1.3.2` and stays green. The
-`demo/msw-v2-upgrade` branch is intentionally red: it changes only
-`package.json` and `package-lock.json` to MSW `2.0.0`, while
-`test/handlers.ts` still uses the MSW 1.x `rest`/`res`/`ctx` API. The manual
-repair workflow must preserve that dependency update and make the smallest
-documented handler migration.
+### 1. CI
 
-Normal CI and remediation are deliberately separate:
+`.github/workflows/ci.yml` installs dependencies and runs the repository checks
+for pull requests, pushes to `main`, and explicit redispatches from Goose.
 
-- `.github/workflows/ci.yml` runs on pull requests and pushes to `main`.
-- `.github/workflows/goose-update-shepherd.yml` runs only when a maintainer
-  manually supplies the exact upgrade commit SHA.
+### 2. Goose repair loop
 
-The manual workflow first runs a secret-free preflight. It validates the
-baseline and target SHAs, proves that the immutable commit range changes only
-the two package files, validates the exact `1.3.2` to `2.0.0` semantic change,
-and captures the expected missing-`rest` compiler error. The environment-gated
-repair job repeats those checks before receiving any model credential.
+`.github/workflows/goose-update-shepherd.yml` listens for failed `CI` runs. For
+an open pull request from this repository, it:
 
-## Google Gemini setup
+1. Checks out the failed PR branch.
+2. Downloads the actual failed CI log.
+3. Runs the generic recipe in `.goose/dependency-update.yaml`.
+4. Lets Goose inspect the failure and choose which code files to change.
+5. Runs `npm run check` after every attempt, with at most two retries.
+6. Commits and pushes a successful repair to the same PR branch.
+7. Explicitly dispatches CI again.
 
-The repair uses Google Gemini through an API key created in
-[Google AI Studio](https://aistudio.google.com/app/apikey).
+The workflow stops after three Goose-authored commits to prevent a runaway
+outer loop.
 
-Configure the repository before dispatching the manual workflow:
+## Why the CI redispatch is explicit
 
-1. Create the protected GitHub Actions environment `goose-repair` and
-   configure at least one required reviewer.
-2. Add `GOOGLE_API_KEY` as an environment secret in `goose-repair`.
-3. Add `GOOSE_MODEL` as an environment or repository variable containing the
-   approved Gemini model name.
-4. Add `BASELINE_SHA` as a repository variable containing the 40-character
-   green baseline commit SHA.
+GitHub does not start another workflow from a push authenticated with the
+workflow's default `GITHUB_TOKEN`. After Goose pushes, it therefore calls
+`gh workflow run ci.yml --ref <branch>`. This keeps the demo to two workflows
+and avoids requiring a separate personal access token.
 
-Before approving the `goose-repair` environment deployment, the required
-reviewer must:
+## Worked example
 
-1. Verify the deployment request is for the exact submitted 40-character
-   `target_sha`. Open the linked workflow run and compare the full value; reject
-   an abbreviated or mismatched SHA.
-2. Inspect `package-lock.json` from that exact target commit. Use the commit's
-   file view or a trusted local checkout. Reject the approval if the lockfile
-   has unexpected source URLs, integrity hashes, or packages, or if you have
-   not reviewed that target commit.
+[`demo/msw-v2-upgrade`](https://github.com/anilmuppalla/goose-dependency-update-loop-demo/pull/1)
+upgrades Mock Service Worker from `1.3.2` to `2.0.0` without updating the code
+that uses it. CI fails, but neither the Goose workflow nor recipe contains the
+expected error, migration instructions, or repair filename. Goose must diagnose
+the observed failure itself.
 
-The workflow fixes `GOOSE_PROVIDER=google` and exposes `GOOGLE_API_KEY` only to
-the bounded Goose execution step. Repository permissions remain
-`contents: read`.
+## Configuration
 
-> **Security warning:** do not dispatch the repair workflow for untrusted pull
-> request code or an unreviewed commit. The target runs on a credential-bearing
-> runner. The SHA and two-file diff checks reduce drift; they do not turn
-> hostile code into trusted code.
+Add these GitHub repository settings:
 
-## Local commands
+- Secret: `GOOGLE_API_KEY`, created in
+  [Google AI Studio](https://aistudio.google.com/app/apikey)
+- Variable: `GOOSE_MODEL`, for example `gemini-3.5-flash`
 
-Install and verify the green baseline:
+The workflows use immutable Node 24-based releases of GitHub's checkout and
+setup-node actions. Goose itself is downloaded at version `1.36.0` and verified
+with a pinned SHA-256 checksum.
+
+## Local baseline
 
 ```bash
 npm ci --ignore-scripts
 npm run check
 ```
 
-Run the semantic package validator against two package snapshots:
+`main` is green. The demo pull request is intentionally red until Goose pushes
+the repair.
 
-```bash
-git show "${BASELINE_SHA}:package.json" > /tmp/base-package.json
-node scripts/validate-upgrade.mjs /tmp/base-package.json package.json
-```
+## Scope
 
-Validate the recipe with Goose `1.36.0` before any model call:
-
-```bash
-GOOSE_DISABLE_KEYRING=1 goose recipe validate .goose/dependency-update.yaml
-```
-
-The recipe expects `artifacts/baseline.log` to contain the failing type-check
-from the intentionally red upgrade. The authoritative repair boundary is in
-`AGENTS.md`; the migration context is frozen in
-`docs/msw-1-to-2-migration-notes.md`.
-
-## Output boundary
-
-A successful run produces review artifacts only. A human must inspect the
-binary patch and evidence before applying anything. No workflow in this repo
-has permission or instructions to push or merge the repair.
+This is a teaching demo, not a production-grade autonomous maintenance system.
+It intentionally omits policy engines, custom status reporting, patch archives,
+semantic dependency validators, and a large security harness so the loop is
+easy to see.

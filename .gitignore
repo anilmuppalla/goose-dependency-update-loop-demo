@@ -1,5 +1,6 @@
 node_modules/
 artifacts/
+.goose-ci-failure.log
 .goose/*
 !.goose/dependency-update.yaml
 .goosehints
