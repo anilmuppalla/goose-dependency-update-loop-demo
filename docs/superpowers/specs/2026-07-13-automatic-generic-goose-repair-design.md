@@ -163,6 +163,20 @@ The required reviewer is the trust boundary for executing dependency code on a
 credential-bearing runner. The workflow's same-repository and immutable-diff
 checks reduce accidental scope; they do not make hostile code trustworthy.
 
+All JavaScript actions use maintained Node 24 runtimes and remain pinned to
+immutable release commits:
+
+- `actions/checkout@v7.0.0` —
+  `9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0`
+- `actions/setup-node@v7.0.0` —
+  `820762786026740c76f36085b0efc47a31fe5020`
+- `actions/upload-artifact@v7.0.1` —
+  `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`
+
+Both workflows install Node.js 24 for repository checks. This is separate from
+the action runtime, but avoids preserving an end-of-life project runtime in the
+public demonstration.
+
 ## Evidence and human handoff
 
 Every eligible run preserves:
@@ -216,7 +230,8 @@ Contract tests will assert that:
 - the patch is generated from the immutable target and includes all allowed
   changes;
 - the secret appears only in the Goose execution step;
-- actions and the Goose archive remain immutable and checksum-pinned;
+- actions use the approved Node 24-based release commits and the Goose archive
+  remains checksum-pinned;
 - the PR status is written against the exact failed head SHA.
 
 The implementation must also pass:
