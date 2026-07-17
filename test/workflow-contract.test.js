@@ -2,107 +2,155 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test } from "vitest";
 
-const workflow = readFileSync(
-  new URL("../.github/workflows/goose-update-shepherd.yml", import.meta.url),
-  "utf8",
-);
-const recipe = readFileSync(
-  new URL("../.goose/dependency-update.yaml", import.meta.url),
-  "utf8",
-);
-const agentInstructions = readFileSync(
-  new URL("../AGENTS.md", import.meta.url),
-  "utf8",
-);
-const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const read = (path) =>
+  readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-const repairJobStart = workflow.indexOf("\n  repair:");
-const repairStepsStart = workflow.indexOf("\n    steps:", repairJobStart);
-const repairJobHeader = workflow.slice(repairJobStart, repairStepsStart);
-const finalStepStart = workflow.indexOf(
-  "      - name: Verify repair scope and final result",
-  repairStepsStart,
-);
-const uploadStepStart = workflow.indexOf(
-  "      - name: Upload repair evidence",
-  finalStepStart,
-);
-const finalVerificationStep = workflow.slice(finalStepStart, uploadStepStart);
+const ciWorkflow = read(".github/workflows/ci.yml");
+const workflow = read(".github/workflows/goose-update-shepherd.yml");
+const recipe = read(".goose/dependency-update.yaml");
+const agentInstructions = read("AGENTS.md");
+const readme = read("README.md");
+
+const CHECKOUT_SHA = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
+const SETUP_NODE_SHA = "820762786026740c76f36085b0efc47a31fe5020";
+const UPLOAD_ARTIFACT_SHA =
+  "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 
 function countOccurrences(text, needle) {
   return text.split(needle).length - 1;
 }
 
-describe("Goose shepherd immutable upgrade contract", () => {
-  test("proves the baseline is an ancestor in both trust checks", () => {
-    const ancestryChecks =
-      workflow.match(
-        /git merge-base --is-ancestor "\$BASELINE_SHA" "\$TARGET_SHA"/g,
-      ) ?? [];
-
-    expect(ancestryChecks).toHaveLength(2);
-  });
-
-  test("uses direct endpoint diffs and rejects three-dot diff semantics", () => {
-    const directDiffs =
-      workflow.match(
-        /git diff --name-only "\$BASELINE_SHA" "\$TARGET_SHA"/g,
-      ) ?? [];
-
-    expect(directDiffs).toHaveLength(2);
-    expect(workflow).not.toContain("$BASELINE_SHA...$TARGET_SHA");
-  });
-
-  test("exposes the immutable target SHA to the repair agent", () => {
-    expect(repairJobHeader).toContain(
-      "    env:\n      TARGET_SHA: ${{ inputs.target_sha }}\n",
+describe("automatic Goose trigger", () => {
+  test("listens for completed failed CI pull-request runs", () => {
+    expect(workflow).toContain("workflow_run:");
+    expect(workflow).toContain('workflows: ["CI"]');
+    expect(workflow).toContain("types: [completed]");
+    expect(workflow).not.toContain("workflow_dispatch:");
+    expect(workflow).toContain(
+      "github.event.workflow_run.conclusion == 'failure'",
+    );
+    expect(workflow).toContain(
+      "github.event.workflow_run.event == 'pull_request'",
     );
   });
 
-  test("reasserts HEAD equals the target before final repair-scope checks", () => {
-    const headAssertion =
-      'test "$(git rev-parse HEAD)" = "$normalized_target"';
-    const targetScopeCheck = 'git diff --name-only "$TARGET_SHA"';
-
-    expect(finalVerificationStep).toContain(
-      'normalized_target="$(printf \'%s\' "$TARGET_SHA" | tr \'A-F\' \'a-f\')"',
-    );
-    expect(finalVerificationStep).toContain(headAssertion);
-    expect(finalVerificationStep.indexOf(headAssertion)).toBeLessThan(
-      finalVerificationStep.indexOf(targetScopeCheck),
-    );
+  test("derives and cross-checks trusted PR context", () => {
+    expect(workflow).toContain("github.event.workflow_run.head_sha");
+    expect(workflow).toContain("github.workflow_sha");
+    expect(workflow).toContain("git merge-base");
+    expect(workflow).toContain("pulls/$PR_NUMBER/files");
+    expect(workflow).toContain("pulls/$PR_NUMBER");
+    expect(workflow).toContain("head.repo.full_name");
+    expect(workflow).toContain("base.ref");
+    expect(workflow).not.toContain("BASELINE_SHA");
+    expect(workflow).not.toContain("inputs.target_sha");
   });
 
-  test("anchors every post-agent scope check and patch to the target", () => {
-    const targetScopeCheck = 'git diff --name-only "$TARGET_SHA"';
+  test("reports a repair candidate status without write access to contents", () => {
+    expect(workflow).toContain("statuses: write");
+    expect(workflow).toContain("pull-requests: read");
+    expect(workflow).toContain("actions: read");
+    expect(workflow).toContain("Goose repair candidate");
+    expect(workflow).not.toContain("contents: write");
+  });
+});
 
-    expect(countOccurrences(finalVerificationStep, targetScopeCheck)).toBe(1);
-    expect(finalVerificationStep).toContain(
-      'git diff --binary "$TARGET_SHA" -- test/handlers.ts',
+describe("maintained action runtimes", () => {
+  test("pins approved Node 24-based action releases", () => {
+    expect(ciWorkflow).toContain(`actions/checkout@${CHECKOUT_SHA}`);
+    expect(ciWorkflow).toContain(`actions/setup-node@${SETUP_NODE_SHA}`);
+    expect(workflow).toContain(`actions/checkout@${CHECKOUT_SHA}`);
+    expect(workflow).toContain(`actions/setup-node@${SETUP_NODE_SHA}`);
+    expect(workflow).toContain(
+      `actions/upload-artifact@${UPLOAD_ARTIFACT_SHA}`,
     );
-    expect(countOccurrences(recipe, targetScopeCheck)).toBe(1);
-    expect(countOccurrences(agentInstructions, targetScopeCheck)).toBe(2);
 
-    for (const contract of [workflow, recipe, agentInstructions]) {
-      expect(contract).not.toContain("git diff --name-only HEAD");
+    for (const source of [ciWorkflow, workflow]) {
+      expect(source).not.toContain(
+        "34e114876b0b11c390a56381ad16ebd13914f8d5",
+      );
+      expect(source).not.toContain(
+        "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      );
+      expect(source).not.toContain('node-version: "20"');
+      expect(source).toContain('node-version: "24"');
     }
-    expect(workflow).not.toContain("git diff --binary HEAD");
+  });
+});
+
+describe("generic repair action", () => {
+  test("does not predict the dependency, error, API, or repair file", () => {
+    const forbidden = [
+      "MSW",
+      "1.3.2",
+      "2.0.0",
+      "test/handlers.ts",
+      "TS2305",
+      "msw-1-to-2-migration-notes",
+    ];
+
+    for (const source of [workflow, recipe, agentInstructions]) {
+      for (const value of forbidden) expect(source).not.toContain(value);
+    }
   });
 
-  test("documents the required human approval checks", () => {
-    const prose = readme.replace(/\s+/g, " ");
+  test("captures the observed repository check instead of matching an error", () => {
+    expect(workflow).toContain(
+      "npm run check > artifacts/baseline.log 2>&1",
+    );
+    expect(workflow).not.toContain("grep -Fqx");
+    expect(recipe).toContain("artifacts/baseline.log");
+  });
 
-    expect(prose).toContain(
-      "Before approving the `goose-repair` environment deployment, the required reviewer must:",
-    );
-    expect(prose).toContain(
-      "Verify the deployment request is for the exact submitted 40-character `target_sha`.",
-    );
-    expect(prose).toContain(
-      "Inspect `package-lock.json` from that exact target commit.",
-    );
-    expect(prose).toContain(
-      "Reject the approval if the lockfile has unexpected source URLs, integrity hashes, or packages, or if you have not reviewed that target commit.",
-    );
+  test("keeps a bounded feedback loop", () => {
+    expect(recipe).toContain("max_retries: 2");
+    expect(recipe).toContain("timeout_seconds: 300");
+    expect(recipe).toContain("max_turns: 20");
+    expect(recipe).toContain("npm run check");
+    expect(recipe).toContain("scripts/check-repair-boundary.sh");
+  });
+});
+
+describe("immutable repair control plane", () => {
+  const protectedFragments = [
+    "\\.github/",
+    "\\.goose/",
+    "AGENTS\\.md",
+    "package\\.json",
+    "package-lock\\.json",
+    "scripts/validate-upgrade\\.mjs",
+    "scripts/check-repair-boundary\\.sh",
+    "test/validate-upgrade\\.test\\.js",
+    "test/workflow-contract\\.test\\.js",
+    "tsconfig\\.json",
+  ];
+
+  test("checks every protected path", () => {
+    for (const fragment of protectedFragments) {
+      expect(agentInstructions).toContain(fragment.replaceAll("\\", ""));
+    }
+    expect(workflow).toContain("scripts/check-repair-boundary.sh");
+    expect(workflow).toContain("git diff --quiet");
+  });
+
+  test("anchors repair checks and the all-file patch to the target SHA", () => {
+    expect(recipe).toContain("scripts/check-repair-boundary.sh");
+    expect(agentInstructions).toContain("scripts/check-repair-boundary.sh");
+    expect(workflow).toContain('git diff --binary "$TARGET_SHA"');
+    expect(workflow).not.toContain("-- test/handlers.ts");
+  });
+});
+
+describe("credential and approval boundary", () => {
+  test("exposes the Gemini key only to Goose execution", () => {
+    expect(countOccurrences(workflow, "secrets.GOOGLE_API_KEY")).toBe(1);
+    expect(workflow).toContain("environment: goose-repair");
+  });
+
+  test("documents exact target and lockfile review", () => {
+    const prose = readme.replace(/\s+/g, " ");
+    expect(prose).toContain("required reviewer");
+    expect(prose).toContain("target");
+    expect(prose).toContain("package-lock.json");
   });
 });

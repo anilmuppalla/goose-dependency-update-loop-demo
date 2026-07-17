@@ -12,6 +12,9 @@ const basePackage = {
     test: "vitest run",
     check: "npm run typecheck && npm test",
   },
+  dependencies: {
+    example: "1.0.0",
+  },
   devDependencies: {
     "@types/node": "22.15.3",
     msw: "1.3.2",
@@ -20,58 +23,63 @@ const basePackage = {
   },
 };
 
-function withMswVersion(packageJson, version) {
-  return {
-    ...packageJson,
-    devDependencies: {
-      ...packageJson.devDependencies,
-      msw: version,
-    },
-  };
-}
-
 describe("validateUpgrade", () => {
-  test("accepts only the MSW 1.3.2 to 2.0.0 upgrade", () => {
-    const currentPackage = withMswVersion(basePackage, "2.0.0");
+  test("accepts arbitrary dependency-map changes", () => {
+    const current = structuredClone(basePackage);
+    current.dependencies.example = "2.0.0";
+    current.devDependencies.added = "3.0.0";
+    delete current.devDependencies.msw;
 
-    expect(validateUpgrade(basePackage, currentPackage)).toBe(true);
+    expect(validateUpgrade(basePackage, current)).toEqual({
+      changes: [
+        "dependencies.example: 1.0.0 -> 2.0.0",
+        "devDependencies.added: <missing> -> 3.0.0",
+        "devDependencies.msw: 1.3.2 -> <missing>",
+      ],
+    });
+  });
+
+  test("accepts changes in optional and peer dependencies", () => {
+    const current = structuredClone(basePackage);
+    current.optionalDependencies = { optional: "1.0.0" };
+    current.peerDependencies = { peer: "^2.0.0" };
+
+    expect(validateUpgrade(basePackage, current).changes).toEqual([
+      "optionalDependencies.optional: <missing> -> 1.0.0",
+      "peerDependencies.peer: <missing> -> ^2.0.0",
+    ]);
+  });
+
+  test("rejects a package with no dependency changes", () => {
+    expect(() =>
+      validateUpgrade(basePackage, structuredClone(basePackage)),
+    ).toThrow(/At least one dependency entry must change/);
   });
 
   test.each([
-    [
-      "wrong base",
-      withMswVersion(basePackage, "1.3.1"),
-      withMswVersion(basePackage, "2.0.0"),
-    ],
-    ["wrong target", basePackage, withMswVersion(basePackage, "2.0.1")],
-  ])("rejects a %s version", (_label, base, current) => {
-    expect(() => validateUpgrade(base, current)).toThrow(
-      /MSW upgrade must be exactly 1\.3\.2 -> 2\.0\.0/,
+    ["script", { scripts: { ...basePackage.scripts, check: "true" } }],
+    ["metadata", { private: false }],
+    ["name", { name: "different-package" }],
+  ])("rejects an unrelated %s change", (_label, override) => {
+    const current = structuredClone(basePackage);
+    current.devDependencies.msw = "2.0.0";
+    Object.assign(current, override);
+
+    expect(() => validateUpgrade(basePackage, current)).toThrow(
+      /Only npm dependency maps may change/,
     );
   });
 
-  test.each([
-    [
-      "package",
-      {
-        ...withMswVersion(basePackage, "2.0.0"),
-        devDependencies: {
-          ...basePackage.devDependencies,
-          msw: "2.0.0",
-          yaml: "2.8.0",
-        },
-      },
-    ],
-    [
-      "script",
-      {
-        ...withMswVersion(basePackage, "2.0.0"),
-        scripts: { ...basePackage.scripts, lint: "eslint ." },
-      },
-    ],
-  ])("rejects an unrelated %s change", (_label, currentPackage) => {
-    expect(() => validateUpgrade(basePackage, currentPackage)).toThrow(
-      /Only devDependencies\.msw may change/,
-    );
-  });
+  test.each(["dependencies", "devDependencies"])(
+    "rejects a non-object %s map",
+    (key) => {
+      const current = structuredClone(basePackage);
+      current.devDependencies.msw = "2.0.0";
+      current[key] = [];
+
+      expect(() => validateUpgrade(basePackage, current)).toThrow(
+        new RegExp(`${key} must be an object when present`),
+      );
+    },
+  );
 });
