@@ -4,27 +4,68 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-const EXPECTED_BASE = "1.3.2";
-const EXPECTED_TARGET = "2.0.0";
+const DEPENDENCY_MAPS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+];
+
+function assertPackageJson(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} package.json must be an object`);
+  }
+}
+
+function withoutDependencyMaps(packageJson) {
+  const copy = structuredClone(packageJson);
+  for (const key of DEPENDENCY_MAPS) delete copy[key];
+  return copy;
+}
+
+function assertDependencyMap(value, key) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${key} must be an object when present`);
+  }
+  return value;
+}
 
 export function validateUpgrade(base, current) {
+  assertPackageJson(base, "Base");
+  assertPackageJson(current, "Current");
+
   if (
-    base?.devDependencies?.msw !== EXPECTED_BASE ||
-    current?.devDependencies?.msw !== EXPECTED_TARGET
+    !isDeepStrictEqual(
+      withoutDependencyMaps(base),
+      withoutDependencyMaps(current),
+    )
   ) {
-    throw new Error(
-      `MSW upgrade must be exactly ${EXPECTED_BASE} -> ${EXPECTED_TARGET}`,
-    );
+    throw new Error("Only npm dependency maps may change");
   }
 
-  const normalizedCurrent = structuredClone(current);
-  normalizedCurrent.devDependencies.msw = EXPECTED_BASE;
+  const changes = [];
+  for (const key of DEPENDENCY_MAPS) {
+    const before = assertDependencyMap(base[key], key);
+    const after = assertDependencyMap(current[key], key);
+    const names = [
+      ...new Set([...Object.keys(before), ...Object.keys(after)]),
+    ].sort();
 
-  if (!isDeepStrictEqual(base, normalizedCurrent)) {
-    throw new Error("Only devDependencies.msw may change");
+    for (const name of names) {
+      if (before[name] !== after[name]) {
+        changes.push(
+          `${key}.${name}: ${before[name] ?? "<missing>"} -> ${after[name] ?? "<missing>"}`,
+        );
+      }
+    }
   }
 
-  return true;
+  if (changes.length === 0) {
+    throw new Error("At least one dependency entry must change");
+  }
+
+  return { changes };
 }
 
 async function readJson(path) {
@@ -40,8 +81,13 @@ async function main() {
     );
   }
 
-  validateUpgrade(await readJson(basePath), await readJson(currentPath));
-  console.log("Validated package.json change: msw 1.3.2 -> 2.0.0 only");
+  const result = validateUpgrade(
+    await readJson(basePath),
+    await readJson(currentPath),
+  );
+  console.log(
+    `Validated dependency-only package.json change: ${result.changes.length} entries changed`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
