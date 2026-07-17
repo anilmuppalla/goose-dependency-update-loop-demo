@@ -4,8 +4,8 @@ description: "Diagnose a CI failure, repair it, and retry checks until green."
 prompt: |
   Read .goose-ci-failure.log, inspect the repository, and diagnose why CI failed.
   Make the smallest correct code change. You do not know the failure or required
-  files in advance. Do not change GitHub workflows, this recipe, package.json,
-  package-lock.json, or weaken tests and build commands.
+  files in advance. Do not change GitHub workflows, this recipe, or weaken tests
+  and build commands.
 extensions:
   - type: builtin
     name: developer
