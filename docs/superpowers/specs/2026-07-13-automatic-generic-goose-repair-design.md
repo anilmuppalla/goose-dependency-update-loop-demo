@@ -70,7 +70,9 @@ It continues only when all of the following are true:
   commit IDs;
 - the GitHub pull-request file list exactly matches the merge-base-to-target Git
   diff;
-- that verified pull-request change is a dependency-only update.
+- that verified pull-request change is a dependency-only update;
+- the target's protected control-plane files exactly match the trusted workflow
+  commit on `main`.
 
 For this npm demo, dependency-only means that the incoming PR changes exactly
 `package.json` and `package-lock.json`. A generic manifest validator permits
@@ -85,6 +87,12 @@ and cross-checks the API file list against the corresponding Git diff. This
 allows `main` to advance without forcing the demo branch to rebase while still
 preventing hidden target changes. The workflow has no caller-supplied SHA and no
 fixed `BASELINE_SHA` variable.
+
+Matching the protected files to the trusted workflow commit prevents an old or
+PR-modified recipe, instruction file, validator, or workflow from defining the
+repair. If `main` advances in one of those files, the pull request must use
+GitHub's normal **Update branch** merge before remediation; no history rewrite
+or rebase is required.
 
 ## Generic Goose context and action
 
@@ -222,6 +230,7 @@ Contract tests will assert that:
   confirmed against the GitHub API;
 - current `main`, merge-base, API file list, and Git diff agree before model
   access;
+- the target's protected files match the trusted workflow commit;
 - the workflow rejects green, non-PR, forked, ambiguous, and non-dependency
   events;
 - the recipe, workflow, and repair instructions contain no MSW-specific error,
@@ -251,8 +260,9 @@ The trusted workflow must land on `main` before it can receive `workflow_run`
 events. Publish the implementation through a separately reviewed, green pull
 request, then remove the obsolete `BASELINE_SHA` repository variable.
 
-After publication, rerun CI for the existing red dependency PR without changing
-or rebasing its branch. The resulting failed CI run should start Goose
-automatically and expose the `Goose repair candidate` status. The real model run
-remains blocked until `GOOGLE_API_KEY` is configured and the environment request
-is approved.
+After publication, use GitHub's **Update branch** operation on the existing red
+dependency PR. This merges the new trusted harness from `main` without rebasing
+or force-pushing, while the PR file list remains dependency-only. The resulting
+failed CI run should start Goose automatically and expose the `Goose repair
+candidate` status. The real model run remains blocked until `GOOGLE_API_KEY` is
+configured and the environment request is approved.
