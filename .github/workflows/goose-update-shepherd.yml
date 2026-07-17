@@ -70,15 +70,15 @@ jobs:
 
       - name: Run the bounded Goose loop
         env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GOOSE_PROVIDER: google
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOSE_PROVIDER: openai
           GOOSE_MODEL: ${{ vars.GOOSE_MODEL }}
           GOOSE_MODE: auto
           GOOSE_DISABLE_SESSION_NAMING: "true"
           GOOSE_DISABLE_KEYRING: "1"
           GOOSE_TELEMETRY_ENABLED: "false"
         run: |
-          test -n "$GOOGLE_API_KEY"
+          test -n "$OPENAI_API_KEY"
           test -n "$GOOSE_MODEL"
           goose recipe validate .goose/dependency-update.yaml
           goose run --no-session --no-profile --recipe .goose/dependency-update.yaml

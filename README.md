@@ -33,9 +33,8 @@ actually observes.
 
 ### Repository settings
 
-- Secret: `GOOGLE_API_KEY`, created in
-  [Google AI Studio](https://aistudio.google.com/app/apikey)
-- Variable: `GOOSE_MODEL`, for example `gemini-3.5-flash`
+- Secret: `OPENAI_API_KEY`
+- Variable: `GOOSE_MODEL`, set to `gpt-5.4-mini`
 
 ### How the demo is wired
 
