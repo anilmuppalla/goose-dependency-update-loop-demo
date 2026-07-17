@@ -1,95 +1,180 @@
 name: Goose dependency update shepherd
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_sha:
-        description: "Exact trusted upgrade commit SHA to repair"
-        required: true
-        type: string
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
+  statuses: write
 
 concurrency:
-  group: goose-update-shepherd-${{ inputs.target_sha }}
+  group: goose-update-shepherd-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
   preflight:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      target_sha: ${{ steps.context.outputs.target_sha }}
+      base_sha: ${{ steps.context.outputs.base_sha }}
+      merge_base: ${{ steps.upgrade.outputs.merge_base }}
+      pr_number: ${{ steps.context.outputs.pr_number }}
+      control_sha: ${{ steps.context.outputs.control_sha }}
 
     steps:
-      - name: Validate immutable inputs
+      - name: Resolve immutable pull request context
+        id: context
         env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          CONTROL_SHA: ${{ github.workflow_sha }}
         run: |
           if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "::error::target_sha must be exactly 40 hexadecimal characters"
+            echo "::error::The failed CI head SHA must be a full commit ID"
             exit 1
           fi
-          if [[ ! "$BASELINE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "::error::BASELINE_SHA must be exactly 40 hexadecimal characters"
+          if [[ ! "$CONTROL_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::The trusted workflow SHA must be a full commit ID"
             exit 1
           fi
 
-      - name: Check out exact target SHA
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+          pr_count="$(jq '.workflow_run.pull_requests | length' "$GITHUB_EVENT_PATH")"
+          if [ "$pr_count" -ne 1 ]; then
+            echo "::error::The failed CI run must identify exactly one pull request"
+            exit 1
+          fi
+
+          pr_number="$(jq -r '.workflow_run.pull_requests[0].number' "$GITHUB_EVENT_PATH")"
+          pr_json="$RUNNER_TEMP/pull-request.json"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number" > "$pr_json"
+
+          test "$(jq -r '.state' "$pr_json")" = "open"
+          test "$(jq -r '.base.ref' "$pr_json")" = "main"
+          test "$(jq -r '.head.repo.full_name' "$pr_json")" = "$GITHUB_REPOSITORY"
+
+          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
+          test "$(jq -r '.head.sha' "$pr_json")" = "$normalized_target"
+
+          base_sha="$(jq -r '.base.sha' "$pr_json")"
+          if [[ ! "$base_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::The pull request base SHA must be a full commit ID"
+            exit 1
+          fi
+
+          {
+            printf 'target_sha=%s\n' "$normalized_target"
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'pr_number=%s\n' "$pr_number"
+            printf 'control_sha=%s\n' "$CONTROL_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact failed head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ steps.context.outputs.target_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
-      - name: Verify immutable dependency-only upgrade
+      - name: Validate dependency-only target and trusted control plane
+        id: upgrade
         env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.context.outputs.target_sha }}
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          CONTROL_SHA: ${{ steps.context.outputs.control_sha }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
-          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
-          test "$(git rev-parse HEAD)" = "$normalized_target"
-          git merge-base --is-ancestor "$BASELINE_SHA" "$TARGET_SHA"
-          expected="$(printf '%s\n' package-lock.json package.json)"
-          actual="$(git diff --name-only "$BASELINE_SHA" "$TARGET_SHA" | LC_ALL=C sort)"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::The baseline-to-target diff must contain only package.json and package-lock.json"
-            printf '%s\n' "$actual"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git fetch --no-tags origin "$BASE_SHA" "$CONTROL_SHA"
+
+          merge_base="$(git merge-base "$BASE_SHA" "$TARGET_SHA")"
+          if [[ ! "$merge_base" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Unable to compute a full merge-base SHA"
             exit 1
           fi
 
-          git show "$BASELINE_SHA:package.json" > "$RUNNER_TEMP/base-package.json"
+          api_files="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[].filename' | LC_ALL=C sort)"
+          git_files="$(git diff --name-only "$merge_base" "$TARGET_SHA" | LC_ALL=C sort)"
+          if [ "$api_files" != "$git_files" ]; then
+            echo "::error::GitHub's pull request file list differs from the Git diff"
+            exit 1
+          fi
+
+          expected="$(printf '%s\n' package-lock.json package.json)"
+          if [ "$git_files" != "$expected" ]; then
+            echo "::error::The pull request must change only package.json and package-lock.json"
+            printf '%s\n' "$git_files"
+            exit 1
+          fi
+
+          protected_paths=(
+            .github
+            .goose
+            AGENTS.md
+            scripts/validate-upgrade.mjs
+            scripts/check-repair-boundary.sh
+            test/validate-upgrade.test.js
+            test/workflow-contract.test.js
+            test/repair-boundary.test.js
+            tsconfig.json
+          )
+          if ! git diff --quiet "$CONTROL_SHA" "$TARGET_SHA" -- "${protected_paths[@]}"; then
+            echo "::error::The target control plane must match the trusted workflow commit"
+            exit 1
+          fi
+
+          git show "$merge_base:package.json" > "$RUNNER_TEMP/base-package.json"
           node scripts/validate-upgrade.mjs "$RUNNER_TEMP/base-package.json" package.json
+          printf 'merge_base=%s\n' "$merge_base" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
 
-      - name: Prove the expected baseline failure
+      - name: Capture the observed failing check
         run: |
           mkdir -p artifacts
           set +e
-          npm run typecheck > artifacts/baseline.log 2>&1
+          npm run check > artifacts/baseline.log 2>&1
           status=$?
           set -e
 
           if [ "$status" -eq 0 ]; then
-            echo "::error::The dependency-only target must fail type-checking before repair"
+            echo "::error::The dependency-only target must fail before repair"
             exit 1
           fi
 
-          grep -Fqx "test/handlers.ts(1,10): error TS2305: Module '\"msw\"' has no exported member 'rest'." artifacts/baseline.log
+      - name: Mark repair candidate pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.context.outputs.target_sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state=pending \
+            -f context="Goose repair candidate" \
+            -f description="Validated failure; waiting for protected repair" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Upload preflight evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: goose-preflight-${{ inputs.target_sha }}
+          name: goose-preflight-${{ steps.context.outputs.target_sha }}
           path: artifacts/baseline.log
           if-no-files-found: warn
           retention-days: 30
@@ -100,7 +185,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      TARGET_SHA: ${{ inputs.target_sha }}
+      TARGET_SHA: ${{ needs.preflight.outputs.target_sha }}
+      BASE_SHA: ${{ needs.preflight.outputs.base_sha }}
+      MERGE_BASE: ${{ needs.preflight.outputs.merge_base }}
+      PR_NUMBER: ${{ needs.preflight.outputs.pr_number }}
+      CONTROL_SHA: ${{ needs.preflight.outputs.control_sha }}
       GOOSE_PROVIDER: google
       GOOSE_MODEL: ${{ vars.GOOSE_MODEL }}
       GEMINI3_THINKING_LEVEL: low
@@ -113,69 +202,73 @@ jobs:
       GOOSE_TELEMETRY_ENABLED: "false"
 
     steps:
-      - name: Validate immutable inputs again
-        env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
-        run: |
-          if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "::error::target_sha must be exactly 40 hexadecimal characters"
-            exit 1
-          fi
-          if [[ ! "$BASELINE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "::error::BASELINE_SHA must be exactly 40 hexadecimal characters"
-            exit 1
-          fi
-
-      - name: Check out exact target SHA again
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Check out exact failed head again
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ needs.preflight.outputs.target_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
-      - name: Repeat immutable and semantic checks
+      - name: Repeat trust and dependency checks after approval
         env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
-          test "$(git rev-parse HEAD)" = "$normalized_target"
-          git merge-base --is-ancestor "$BASELINE_SHA" "$TARGET_SHA"
-          expected="$(printf '%s\n' package-lock.json package.json)"
-          actual="$(git diff --name-only "$BASELINE_SHA" "$TARGET_SHA" | LC_ALL=C sort)"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::The baseline-to-target diff must contain only package.json and package-lock.json"
-            printf '%s\n' "$actual"
-            exit 1
-          fi
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git fetch --no-tags origin "$BASE_SHA" "$CONTROL_SHA"
 
-          git show "$BASELINE_SHA:package.json" > "$RUNNER_TEMP/base-package.json"
+          pr_json="$RUNNER_TEMP/pull-request.json"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$pr_json"
+          test "$(jq -r '.state' "$pr_json")" = "open"
+          test "$(jq -r '.base.ref' "$pr_json")" = "main"
+          test "$(jq -r '.base.sha' "$pr_json")" = "$BASE_SHA"
+          test "$(jq -r '.head.repo.full_name' "$pr_json")" = "$GITHUB_REPOSITORY"
+          test "$(jq -r '.head.sha' "$pr_json")" = "$TARGET_SHA"
+
+          test "$(git merge-base "$BASE_SHA" "$TARGET_SHA")" = "$MERGE_BASE"
+          api_files="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[].filename' | LC_ALL=C sort)"
+          git_files="$(git diff --name-only "$MERGE_BASE" "$TARGET_SHA" | LC_ALL=C sort)"
+          test "$api_files" = "$git_files"
+          test "$git_files" = "$(printf '%s\n' package-lock.json package.json)"
+
+          protected_paths=(
+            .github
+            .goose
+            AGENTS.md
+            scripts/validate-upgrade.mjs
+            scripts/check-repair-boundary.sh
+            test/validate-upgrade.test.js
+            test/workflow-contract.test.js
+            test/repair-boundary.test.js
+            tsconfig.json
+          )
+          git diff --quiet "$CONTROL_SHA" "$TARGET_SHA" -- "${protected_paths[@]}"
+
+          git show "$MERGE_BASE:package.json" > "$RUNNER_TEMP/base-package.json"
           node scripts/validate-upgrade.mjs "$RUNNER_TEMP/base-package.json" package.json
 
       - name: Install dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
 
-      - name: Reproduce the expected baseline failure
+      - name: Reproduce the observed failure
         run: |
           mkdir -p artifacts
           set +e
-          npm run typecheck > artifacts/baseline.log 2>&1
+          npm run check > artifacts/baseline.log 2>&1
           status=$?
           set -e
 
           if [ "$status" -eq 0 ]; then
-            echo "::error::The dependency-only target must fail type-checking before repair"
+            echo "::error::The dependency-only target must fail before repair"
             exit 1
           fi
-
-          grep -Fqx "test/handlers.ts(1,10): error TS2305: Module '\"msw\"' has no exported member 'rest'." artifacts/baseline.log
 
       - name: Install pinned Goose 1.36.0
         run: |
@@ -230,11 +323,8 @@ jobs:
           cp "$raw_log" artifacts/goose-run.log
           rm -f "$raw_log"
 
-      - name: Verify repair scope and final result
+      - name: Verify generic repair and create evidence
         if: always()
-        env:
-          TARGET_SHA: ${{ inputs.target_sha }}
-          BASELINE_SHA: ${{ vars.BASELINE_SHA }}
         run: |
           if [ -f artifacts/SECURITY_HOLD.txt ]; then
             echo "::error::Security hold is active; no other evidence will be produced"
@@ -246,32 +336,18 @@ jobs:
             exit 1
           fi
 
-          normalized_target="$(printf '%s' "$TARGET_SHA" | tr 'A-F' 'a-f')"
-          test "$(git rev-parse HEAD)" = "$normalized_target"
-
-          changed="$(git diff --name-only "$TARGET_SHA")"
-          if [ "$changed" != "test/handlers.ts" ]; then
-            echo "::error::Tracked repair diff must contain exactly test/handlers.ts"
-            printf '%s\n' "$changed"
-            exit 1
-          fi
-
-          untracked="$(git ls-files --others --exclude-standard)"
-          if [ -n "$untracked" ]; then
-            echo "::error::Unexpected nonignored untracked files"
-            printf '%s\n' "$untracked"
-            exit 1
-          fi
-
+          bash scripts/check-repair-boundary.sh
           npm run check 2>&1 | tee artifacts/final-check.log
-          git diff --binary "$TARGET_SHA" -- test/handlers.ts > artifacts/goose-fix.patch
+          git diff --binary "$TARGET_SHA" > artifacts/goose-fix.patch
           test -s artifacts/goose-fix.patch
           test -s artifacts/goose-summary.md
 
           goose_version="$(goose --version | tr -d '[:space:]')"
           {
             printf 'target_sha=%s\n' "$TARGET_SHA"
-            printf 'baseline_sha=%s\n' "$BASELINE_SHA"
+            printf 'base_sha=%s\n' "$BASE_SHA"
+            printf 'merge_base=%s\n' "$MERGE_BASE"
+            printf 'pr_number=%s\n' "$PR_NUMBER"
             printf 'goose_version=%s\n' "$goose_version"
             printf 'provider=%s\n' "$GOOSE_PROVIDER"
             printf 'model=%s\n' "$GOOSE_MODEL"
@@ -283,9 +359,43 @@ jobs:
 
       - name: Upload repair evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: goose-repair-${{ inputs.target_sha }}
+          name: goose-repair-${{ needs.preflight.outputs.target_sha }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 30
+
+  finalize:
+    if: >-
+      always() &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+    needs:
+      - preflight
+      - repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Publish final repair candidate status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPAIR_RESULT: ${{ needs.repair.result }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            exit 0
+          fi
+
+          state=failure
+          description="Repair did not produce a validated patch"
+          if [ "$REPAIR_RESULT" = "success" ]; then
+            state=success
+            description="Validated Goose repair patch is available"
+          fi
+
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TARGET_SHA" \
+            -f state="$state" \
+            -f context="Goose repair candidate" \
+            -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

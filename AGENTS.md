@@ -28,6 +28,7 @@ Never change:
 - `scripts/check-repair-boundary.sh`
 - `test/validate-upgrade.test.js`
 - `test/workflow-contract.test.js`
+- `test/repair-boundary.test.js`
 - `tsconfig.json`
 
 Do not add dependencies or alter the dependency update. Do not delete, skip,
