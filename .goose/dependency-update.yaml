@@ -1,32 +1,26 @@
 version: "1.0.0"
-title: "Bounded MSW dependency update repair"
+title: "Bounded dependency update repair"
 description: >-
-  Repair the frozen MSW 1.x to 2.x handler migration within one tracked file.
-  Two retries permit up to three attempts total.
+  Diagnose an observed dependency-update failure and produce the smallest
+  validated repository repair. Two retries permit three attempts total.
 prompt: |
-  The immutable dependency upgrade from MSW 1.3.2 to 2.0.0 fails type-checking.
+  A dependency-only pull request fails the repository's existing checks.
 
-  Read these local files in order:
+  Read these local files first:
   1. AGENTS.md
   2. artifacts/baseline.log
-  3. docs/msw-1-to-2-migration-notes.md
-  4. test/handlers.ts
 
-  Do not fetch migration documentation or other context from the network.
-  Diagnose the documented API break and make the smallest allowed repair.
-  Only test/handlers.ts may change.
+  Inspect the repository and the complete observed failure. Diagnose the cause
+  yourself. Make the smallest repair that preserves the dependency update and
+  restores every existing check. Do not assume which files or APIs must change.
 
-  Write artifacts/goose-summary.md with the diagnosis, changed file, commands
-  run, validation result, and remaining risk. If the repair needs any other
-  tracked file or facts outside the frozen note, write NEEDS_HUMAN and stop.
-
-  The retry budget is two retries, so the loop has at most three attempts total.
+  Write artifacts/goose-summary.md with the diagnosis, changed files, commands
+  run, validation result, and remaining risk. If a correct repair requires a
+  protected file, write NEEDS_HUMAN and stop.
 instructions: |
-  Follow AGENTS.md exactly. Preserve the dependency update and every check.
-  Never change package manifests, tests outside test/handlers.ts, configuration,
-  workflows, instructions, the recipe, or migration context. Never commit,
-  push, open a pull request, merge, publish, or deploy. Do not claim success
-  unless every deterministic check passes.
+  Follow AGENTS.md exactly. Never redefine the trigger, dependency update,
+  validation, or success criteria. Never commit, push, open or update a pull
+  request, merge, publish, or deploy.
 extensions:
   - type: builtin
     name: developer
@@ -37,9 +31,7 @@ retry:
     - type: shell
       command: "npm run check"
     - type: shell
-      command: 'test "$(git diff --name-only "$TARGET_SHA")" = "test/handlers.ts"'
-    - type: shell
-      command: "test -z \"$(git ls-files --others --exclude-standard)\""
+      command: "bash scripts/check-repair-boundary.sh"
     - type: shell
       command: "test -s artifacts/goose-summary.md"
   on_failure: >-

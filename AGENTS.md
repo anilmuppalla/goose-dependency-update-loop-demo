@@ -1,61 +1,60 @@
-# Repair Agent Instructions
+# Generic Repair Agent Instructions
 
-## Exact commands
+## Goal
 
-- Install dependencies: `npm ci --ignore-scripts`
-- Type-check: `npm run typecheck`
-- Test: `npm test`
-- Run every project check: `npm run check`
-- Inspect tracked changes: `git diff --name-only "$TARGET_SHA"`
-- Inspect unexpected untracked files:
-  `git ls-files --others --exclude-standard`
+Diagnose the observed dependency-update failure and make the smallest repair
+that restores every existing repository check. The failure and required code
+changes are not known in advance.
 
 ## Required context
 
-Read these files before changing anything, in this order:
+Read `artifacts/baseline.log` before changing anything. Inspect the repository,
+installed dependency APIs, types, and existing tests to determine the cause.
+Do not assume a particular dependency, error, API migration, or repair file.
 
-1. `AGENTS.md`
-2. `artifacts/baseline.log`
-3. `docs/msw-1-to-2-migration-notes.md`
-4. `test/handlers.ts`
+## Allowed repair scope
 
-The checked-in migration note is the frozen source context for this run. Do
-not fetch migration guidance from the network.
-
-## Repair boundary
-
-The only tracked file the repair may change is `test/handlers.ts`.
+You may modify any tracked repository file needed for a correct repair except
+the immutable control-plane files listed below. Multi-file repairs are allowed.
 
 Never change:
 
-- `package.json` or `package-lock.json`
-- any test other than the allowed handler file
-- `tsconfig.json` or other configuration
-- anything under `.github/workflows/`
-- `README.md`, `AGENTS.md`, or other instructions
-- `.goose/dependency-update.yaml`
-- the frozen migration note
+- anything under `.github/`
+- anything under `.goose/`
+- `AGENTS.md`
+- `package.json`
+- `package-lock.json`
+- `scripts/validate-upgrade.mjs`
+- `scripts/check-repair-boundary.sh`
+- `test/validate-upgrade.test.js`
+- `test/workflow-contract.test.js`
+- `tsconfig.json`
 
-Do not delete, skip, weaken, replace, or rewrite validation. Do not add
-dependencies. Do not commit, push, open or update a pull request, merge,
-publish, or deploy.
+Do not add dependencies or alter the dependency update. Do not delete, skip,
+weaken, replace, or rewrite validation merely to make it pass. Do not commit,
+push, open or update a pull request, merge, publish, or deploy.
 
-If a correct repair requires any tracked file outside `test/handlers.ts`, write
-`NEEDS_HUMAN` and the reason to `artifacts/goose-summary.md`, then stop.
+If a correct repair requires a protected file, write `NEEDS_HUMAN` and the
+reason to `artifacts/goose-summary.md`, then stop.
 
-## Completion contract
+## Required validation
 
-Run `npm run check`. Confirm that `git diff --name-only "$TARGET_SHA"` prints
-exactly `test/handlers.ts` and that
-`git ls-files --others --exclude-standard` prints nothing.
+Run:
+
+- `npm run check`
+- `bash scripts/check-repair-boundary.sh`
+
+Both commands must pass. The boundary script verifies that the immutable target
+commit did not move, at least one allowed tracked file changed, no protected
+file changed, and no unexpected untracked files were created.
 
 Write `artifacts/goose-summary.md` with:
 
 - the diagnosis
-- the changed file
+- every changed file
 - commands run and their results
 - the final validation result
 - any remaining risk
 
-If any completion condition fails or falls outside the repair boundary, record
-`NEEDS_HUMAN` instead of claiming success.
+If a completion condition fails, record `NEEDS_HUMAN` instead of claiming
+success.
