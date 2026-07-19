@@ -81,7 +81,7 @@ jobs:
           test -n "$OPENAI_API_KEY"
           test -n "$GOOSE_MODEL"
           goose recipe validate .goose/dependency-update.yaml
-          goose run --no-session --no-profile --recipe .goose/dependency-update.yaml
+          goose run --no-session --recipe .goose/dependency-update.yaml
 
       - name: Verify and push the repair
         env:
