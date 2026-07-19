@@ -1,14 +1,11 @@
-import { rest } from "msw";
+import { http, HttpResponse } from "msw";
 
 export const handlers = [
-  rest.get("https://api.example.test/users/:id", (req, res, ctx) => {
-    if (req.params.id === "missing") {
-      return res(ctx.status(404));
+  http.get("https://api.example.test/users/:id", ({ params }) => {
+    if (params.id === "missing") {
+      return HttpResponse.json(null, { status: 404 });
     }
 
-    return res(
-      ctx.status(200),
-      ctx.json({ id: req.params.id, name: "Ada" }),
-    );
+    return HttpResponse.json({ id: params.id, name: "Ada" });
   }),
 ];
